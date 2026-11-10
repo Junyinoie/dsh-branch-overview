@@ -1,8 +1,8 @@
 {
   "name": "dsh-branch-overview",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "type": "module",
-  "description": "Branch overview panel for the DSH Web GUI: every git repository in your workspaces, with local branches, upstream sync state, last commit and worktree badges.",
+  "description": "Branch manager for the DSH Web GUI: a composer chip showing the session repository and branch, with switching, stash/discard, pull/push and unsaved/unpushed markers.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

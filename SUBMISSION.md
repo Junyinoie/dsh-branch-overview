@@ -37,7 +37,7 @@ collector 每天 06:00 扫描 `dsh-plugin` 等 topic；仓库不是 fork/archive
 - 一句话简介：在 DSH 输入框显示当前会话仓库与分支，可切换分支、暂存/丢弃改动、查看未保存/未推送状态。
 - 安装命令：dsh plugin --profile web add github:Junyinoie/dsh-branch-overview
 - 作者自述：
-  dsh-branch-overview 把「分支总览」放进 DSH 工作区：输入框左侧芯片直接显示 仓库 + 当前分支，
+  dsh-branch-overview 把「分支管理」放进 DSH 工作区：输入框左侧芯片直接显示 仓库 + 当前分支，
   点开即可按目录筛选分支、一键切换；当前分支的未保存改动可暂存或丢弃（二次确认），
   有本地提交未推送时显示 未推送 N，并可一键拉取/推送。弹窗里的 ? 图标给出每种状态的说明与危险操作提醒。
   全部 git 操作只在你点击时执行，Host 端只读扫描 + 显式确认。

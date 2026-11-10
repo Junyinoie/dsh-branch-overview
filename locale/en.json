@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Branch Overview",
+    "title": "Branch Manager",
     "description": "Shows the repository and branch of the current session directory next to the composer, with a picker to filter and switch branches; multi-repository directories get a count badge and remember the last pick."
   }
 }

@@ -2,7 +2,7 @@
  * dsh-branch-overview — browser half.
  *
  * Three registrations, all on the same read-only data:
- *  - `sidebar.panellist` + `main`: the full 分支总览 panel;
+ *  - `sidebar.panellist` + `main`: the full 分支管理 panel;
  *  - `conversation.input.left`: a composer chip showing the current
  *    repository/branch of the session directory, with a switch dialog so the
  *    branch can be changed without leaving the conversation.
@@ -22,11 +22,11 @@ window.__ModuleLoader__.load({
     const ROUTE_SWITCH = '/plugin/branch-overview/switch';
     const ROUTE_ACTION = '/plugin/branch-overview/action';
     const REFRESH_MS = 60000;
-    const LABEL = '分支总览';
+    const LABEL = '分支管理';
     const CHIP_ID = 'branch-overview-chip';
 
     /**
-     * The left-nav 「分支总览」 entry and its full panel are switched off: this
+     * The left-nav 「分支管理」 entry and its full panel are switched off: this
      * plugin contributes only the composer chip (the workspace-facing branch
      * display). Flip to `true` to bring the sidebar entry and panel back.
      */
