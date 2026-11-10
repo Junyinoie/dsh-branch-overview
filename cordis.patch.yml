@@ -1,0 +1,6 @@
+# dsh-branch-overview bundle patch: one Host row. Its browser half (./client)
+# is registered by the modules service from the package's dsh.client manifest,
+# so the panel and its sidebar icon need no extra row.
+- insert:
+    - id: branch-overview
+      name: 'dsh-branch-overview'
