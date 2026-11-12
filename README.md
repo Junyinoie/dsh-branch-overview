@@ -24,8 +24,8 @@
 
 | 按钮 | 出现位置 | 实际执行 |
 |---|---|---|
-| **保存** | 当前分支行，且不是 `master` | 把当前分支全部改动提交到本地：`git add -A`（排除 `.dsh-backups/`、`.tmp/`、`.cache/`、`.DS_Store`）后 `git commit`。**不推送**，不创建 stash |
-| **推送** | 除 `master` 外的所有分支行 | 当前分支有上游 → `git push`；无上游 → `git push -u origin <分支>`；非当前分支 → `git push origin <分支>`。不强推；失败显示 git 原始错误 |
+| **保存** | 当前分支行，且不是 `master` | 把当前分支全部改动提交到本地：`git add -A`（排除 `.dsh-backups/`、`.tmp/`、`.cache/`、`.DS_Store`）后 `git commit`。提交说明默认由改动路径生成中文摘要（如 `保存：资金看板、司库可视化看板（3 个文件）`），也可由调用方传入 `message`。**不推送**，不创建 stash |
+| **推送** | 除 `master` 外的所有分支行 | 当前分支有上游 → `git push`；无上游 → `git push -u origin <分支>`；非当前分支 → `git push origin <分支>`。没有已提交内容时按钮置灰；有未保存改动时先确认「保存并推送」。不强推；失败显示 git 原始错误 |
 | **拉取** | 仅 `master` 行 | 不切换分支：`git fetch origin master:master` 快进本地 master；若 master 正被检出则 `git pull --ff-only`。分叉或 master 在别的 worktree 里时 git 会拒绝 |
 | **切换** | 所有分支行 | 工作区干净才执行 `git switch`；有未保存改动时先提示保存。例外：`master` 禁止保存，若 master 上有改动，允许确认后把改动带到工作分支 |
 
@@ -95,7 +95,7 @@ npm test
 
 插件同时发布在 npm 和 GitHub。DSH 市场对已安装插件的更新执行 `dsh plugin add dsh-branch-overview@latest`，所以每次发版必须同步发布 npm；只推 GitHub 标签时，市场更新会失败。
 
-1. 修改代码并更新 `package.json` 版本（当前为 `0.3.0`）。
+1. 修改代码并更新 `package.json` 版本（当前为 `0.3.1`）。
 2. `npm test` 通过。
 3. 提交并推送 `main`，打标签 `vX.Y.Z` 并推送标签。
 4. 在插件目录发布 npm：
@@ -117,8 +117,8 @@ npm view dsh-branch-overview version
 
 ```bash
 git add -A
-git commit -m "feat: save/push/pull-only-master workflow"
-git tag v0.3.0
+git commit -m "feat: 中文提交说明与推送禁用态"
+git tag v0.3.1
 git push origin main --tags
 ```
 

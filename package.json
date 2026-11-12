@@ -1,6 +1,6 @@
 {
   "name": "dsh-branch-overview",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Branch manager for the DSH Web GUI: a composer chip showing the session repository and branch, with save-to-local-branch, push/pull and clean branch switching.",
   "scripts": {

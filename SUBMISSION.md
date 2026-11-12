@@ -5,7 +5,7 @@
 - 根目录有 `cordis.patch.yml`（市场 collector 的 DSH 插件特征检测通过）
 - 包名 `dsh-branch-overview`（无作用域，可直接发布/引用）
 - `package.json` 的 `dsh.bundle` + `dsh.client` 声明完整
-- 已建本地 git 仓库，当前版本 `0.3.0`（发布时打 tag `v0.3.0`）
+- 已建本地 git 仓库，当前版本 `0.3.1`（发布时打 tag `v0.3.1`）
 
 ## 1. 建 GitHub 仓库并推送（需要你的 GitHub 账号）
 
@@ -72,7 +72,7 @@ npm view dsh-branch-overview version
 
 ## 备注：包名与安装命令
 
-- 包名 `dsh-branch-overview`，已发布 npm，当前 latest 为 `0.3.0`。
+- 包名 `dsh-branch-overview`，已发布 npm，当前 latest 为 `0.3.1`。
 - 安装命令：
 
 ```bash

@@ -45,6 +45,9 @@ window.__ModuleLoader__.load({
       ok: 'var(--dsw-alias-success-primary, #15803d)',
       warn: 'var(--dsw-alias-warning-primary, #b45309)',
       danger: 'var(--dsw-alias-danger-primary, #b91c1c)',
+      disabledText: 'var(--dsw-alias-label-disabled, #c3c8d1)',
+      disabledBg: 'var(--dsw-alias-bg-disabled, rgba(120,130,145,.11))',
+      disabledBorder: 'var(--dsw-alias-border-disabled, rgba(120,130,145,.16))',
     };
     const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
@@ -293,44 +296,74 @@ window.__ModuleLoader__.load({
       function actionStyle(isDisabled) {
         return {
           padding: '3px 8px', borderRadius: 6, fontSize: 11, whiteSpace: 'nowrap',
-          border: `1px solid ${T.border}`, background: 'transparent',
-          color: isDisabled ? T.faint : T.muted, cursor: isDisabled ? 'default' : 'pointer',
+          border: `1px solid ${isDisabled ? T.disabledBorder : T.border}`,
+          background: isDisabled ? T.disabledBg : 'transparent',
+          color: isDisabled ? T.disabledText : T.muted,
+          cursor: isDisabled ? 'not-allowed' : 'pointer',
         };
       }
 
       /**
        * Run one quick action against the active repository: `pull` (master
        * only), `save` (current branch only) or `push` (any non-master branch).
+       * Pushing with unsaved changes offers to save first in the same click.
        */
       async function runAction(branch, action) {
         if (active === null || active === undefined) return;
+        let saveFirst = false;
         if (action === 'save') {
           if (changeCount === 0) {
             setActionError('没有可保存的改动');
             return;
           }
           if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
-            if (!window.confirm(`将保存当前分支的 ${changeCount} 个改动到本地分支 ${branch.name}，不会推送。继续？`)) return;
+            if (!window.confirm(`将把当前 ${changeCount} 个改动保存到本地分支 ${branch.name}，提交说明自动生成中文摘要，不会推送。继续？`)) return;
           }
         }
-        if (action === 'push' && typeof window !== 'undefined' && typeof window.confirm === 'function') {
-          const unsaved = changeCount > 0 ? `当前还有 ${changeCount} 个未保存改动，不会推送。\n` : '';
-          if (!window.confirm(`${unsaved}把分支 ${branch.name} 推送到 origin 吗？`)) return;
+        if (action === 'push') {
+          const unpushed = typeof branch.unpushed === 'number' ? branch.unpushed : null;
+          const subject = typeof branch.subject === 'string' && branch.subject !== '' ? branch.subject : '';
+          const latest = subject === '' ? '' : `（最新：${subject}）`;
+          if (unpushed === 0 && changeCount === 0) {
+            setActionError('没有需要推送的提交：分支已和远端一致');
+            return;
+          }
+          if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+            if (unpushed === 0) {
+              if (!window.confirm(`当前 ${changeCount} 个改动还没保存，暂时没有可推送的提交。\n先保存成一次本地提交，再一起推送到 origin 吗？`)) return;
+              saveFirst = true;
+            } else if (changeCount > 0) {
+              if (!window.confirm(`将推送 ${unpushed} 个已提交的改动${latest}；\n另有 ${changeCount} 个未保存改动不会包含在内。继续推送吗？`)) return;
+            } else if (!window.confirm(`把分支 ${branch.name}${latest} 推送到 origin 吗？`)) return;
+          }
         }
         setBusyAction(`${action}:${branch.name}`);
         setActionError('');
         setActionNote('');
         try {
+          let saved = null;
+          if (saveFirst) {
+            saved = await postJson(ROUTE_ACTION, { repoPath: active.root, action: 'save', branch: branch.name, confirm: true });
+            if (saved.json.ok !== true) {
+              setActionError(typeof saved.json.error === 'string' ? saved.json.error : `保存失败（HTTP ${saved.status}）`);
+              return;
+            }
+          }
           const payload = { repoPath: active.root, action, branch: branch.name };
           if (action === 'save' || action === 'push') payload.confirm = true;
           const result = await postJson(ROUTE_ACTION, payload);
           if (result.json.ok === true) {
             if (action === 'pull') setActionNote(`已更新 ${branch.name}（${result.json.mode === 'fetch' ? 'fetch 快进本地分支' : 'pull --ff-only'}）`);
             else if (action === 'save') {
-              const commit = typeof result.json.commit === 'string' && result.json.commit !== '' ? `（${result.json.commit}）` : '';
+              const detail = typeof result.json.message === 'string' && result.json.message !== ''
+                ? result.json.message
+                : typeof result.json.commit === 'string' && result.json.commit !== '' ? result.json.commit : '';
               const remaining = typeof result.json.remaining === 'number' && result.json.remaining > 0 ? `；仍有 ${result.json.remaining} 个本地临时改动未保存` : '';
-              setActionNote(`已保存 ${result.json.files} 个文件到本地分支 ${branch.name}${commit}，尚未推送${remaining}`);
-            } else setActionNote(`已推送 ${branch.name} → ${result.json.upstream}`);
+              setActionNote(`已保存 ${result.json.files} 个文件到本地分支 ${branch.name}${detail !== '' ? `（${detail}）` : ''}，尚未推送${remaining}`);
+            } else {
+              const savedNote = saved !== null && typeof saved.json.files === 'number' ? `已保存 ${saved.json.files} 个文件；` : '';
+              setActionNote(`${savedNote}已推送 ${branch.name} → ${result.json.upstream}`);
+            }
             if (typeof props.onAction === 'function') props.onAction();
             return;
           }
@@ -471,6 +504,7 @@ window.__ModuleLoader__.load({
               const disabled = branch.current === true || occupied || busy !== '' || busyAction !== '';
               const isMaster = branch.name === 'master';
               const actionBusy = busyAction !== '';
+              const nothingToPush = typeof branch.unpushed === 'number' && branch.unpushed === 0 && !(branch.current === true && changeCount > 0);
               const rowActions = [];
               if (isMaster) {
                 rowActions.push(h('button', {
@@ -496,10 +530,10 @@ window.__ModuleLoader__.load({
                 rowActions.push(h('button', {
                   key: 'push',
                   type: 'button',
-                  disabled: actionBusy || noRemote,
-                  title: noRemote ? '未配置远端' : `推送 ${branch.name} 到 origin`,
+                  disabled: actionBusy || noRemote || nothingToPush,
+                  title: noRemote ? '未配置远端' : nothingToPush ? '没有需要推送的提交（先保存改动）' : `推送 ${branch.name} 到 origin`,
                   onClick: () => { void runAction(branch, 'push'); },
-                  style: actionStyle(actionBusy || noRemote),
+                  style: actionStyle(actionBusy || noRemote || nothingToPush),
                 }, busyAction === `push:${branch.name}` ? '推送中…' : '推送'));
               }
               return h('div', {
@@ -525,8 +559,9 @@ window.__ModuleLoader__.load({
                   onClick: () => { void submit(branch); },
                   style: {
                     padding: '3px 10px', borderRadius: 6, fontSize: 11.5, whiteSpace: 'nowrap',
-                    border: `1px solid ${T.border}`, background: T.surface,
-                    color: disabled ? T.faint : T.text, cursor: disabled ? 'default' : 'pointer',
+                    border: `1px solid ${disabled ? T.disabledBorder : T.border}`,
+                    background: disabled ? T.disabledBg : T.surface,
+                    color: disabled ? T.disabledText : T.text, cursor: disabled ? 'not-allowed' : 'pointer',
                   },
                 }, busy === branch.name ? '切换中…' : branch.current === true ? '当前' : '切换'));
             })),
@@ -599,8 +634,9 @@ window.__ModuleLoader__.load({
             onClick: () => { if (typeof props.onSwitch === 'function') props.onSwitch(branch); },
             style: {
               padding: '2px 8px', borderRadius: 6, fontSize: 11, whiteSpace: 'nowrap',
-              border: `1px solid ${T.border}`, background: T.surface,
-              color: occupied ? T.faint : T.text, cursor: occupied ? 'default' : 'pointer',
+              border: `1px solid ${occupied ? T.disabledBorder : T.border}`,
+              background: occupied ? T.disabledBg : T.surface,
+              color: occupied ? T.disabledText : T.text, cursor: occupied ? 'not-allowed' : 'pointer',
             },
           }, '切换'));
     }

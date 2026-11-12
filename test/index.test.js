@@ -7,7 +7,7 @@ import { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 import test from 'node:test';
 
-import { apply, ROUTE_ACTION, ROUTE_SWITCH } from '../index.js';
+import { apply, ROUTE_ACTION, ROUTE_SWITCH, summarizeChanges } from '../index.js';
 
 const exec = promisify(execFile);
 
@@ -62,6 +62,14 @@ function post(routes, path, payload) {
   });
 }
 
+test('summarizeChanges turns CJK paths into a readable commit subject', () => {
+  assert.equal(
+    summarizeChanges(['页面/tes/资金看板/司库可视化看板/index.html', '页面/tes/资金看板/司库可视化看板/app.js']),
+    '保存：资金看板、司库可视化看板（2 个文件）',
+  );
+  assert.equal(summarizeChanges(['doc/readme.md']), '保存改动（1 个文件）');
+});
+
 test('save commits tracked and new files, but excludes local backups', async (t) => {
   const root = await makeRepo();
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -78,6 +86,8 @@ test('save commits tracked and new files, but excludes local backups', async (t)
   assert.equal(saved.status, 200);
   assert.equal(saved.json.files, 2);
   assert.equal(saved.json.remaining, 0);
+  assert.match(saved.json.message, /^保存/);
+  assert.equal(await git(root, 'log', '-1', '--pretty=%s'), saved.json.message);
 
   const committed = await git(root, 'show', '--pretty=', '--name-only', 'HEAD');
   assert.deepEqual(committed.split('\n').sort(), ['new-file.txt', 'tracked.txt']);

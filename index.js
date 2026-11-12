@@ -40,6 +40,38 @@ const PROTECTED_BRANCH = 'master';
 /** Local-only paths never included in a save. */
 const SAVE_EXCLUDES = ['.dsh-backups', '.tmp', '.cache', '.DS_Store'];
 
+/** Folder names that describe repository structure, not the change itself. */
+const SUMMARY_SKIP_SEGMENTS = new Set([
+  '页面', '组件', '样式', '事件', '图片资源', '工具', '原型迁移', '共享', '公共',
+  'src', 'lib', 'app', 'client', 'shared', 'public', 'assets', 'styles', 'test', 'tests', 'doc', 'docs',
+  'page', 'pages', 'component', 'components', 'style', 'styles', 'script', 'scripts',
+]);
+
+/**
+ * Chinese subject for a save commit: the most specific CJK folder or file names
+ * among the changed paths, so the branch list shows `保存：资金看板（3 个文件）`
+ * instead of an ISO timestamp.
+ */
+export function summarizeChanges(files) {
+  const names = [];
+  for (const file of files) {
+    const parts = String(file).split('/').filter((part) => part !== '');
+    for (let index = 0; index < parts.length; index += 1) {
+      const raw = index === parts.length - 1 ? parts[index].replace(/\.[^.]+$/, '') : parts[index];
+      const name = raw.trim();
+      if (name === '' || SUMMARY_SKIP_SEGMENTS.has(name)) continue;
+      if (!/[\u3400-\u9fff]/.test(name)) continue;
+      const clipped = name.length > 24 ? `${name.slice(0, 24)}…` : name;
+      if (!names.includes(clipped)) names.push(clipped);
+      if (names.length >= 3) break;
+    }
+    if (names.length >= 3) break;
+  }
+  const scope = names.join('、');
+  const count = files.length;
+  return scope === '' ? `保存改动（${count} 个文件）` : `保存：${scope}（${count} 个文件）`;
+}
+
 /** Run one git command without a shell; never throws. */
 function git(cwd, args) {
   return new Promise((resolve) => {
@@ -390,7 +422,7 @@ async function saveWorkingChanges(root, message) {
   }
   const text = typeof message === 'string' && message.trim() !== ''
     ? message.trim().slice(0, 500)
-    : `保存当前改动 ${new Date().toISOString()}`;
+    : summarizeChanges(files);
   const committed = await git(root, ['commit', '-m', text]);
   if (!committed.ok) {
     return { status: 409, body: { ok: false, code: 'git', action: 'save', branch, files: files.length, error: firstLine(committed.err) } };
@@ -400,7 +432,7 @@ async function saveWorkingChanges(root, message) {
   const remaining = after.ok ? meaningfulChanges(after.entries).length : -1;
   return {
     status: 200,
-    body: { ok: true, action: 'save', branch, files: files.length, commit: sha.ok ? sha.out.trim() : '', remaining },
+    body: { ok: true, action: 'save', branch, files: files.length, commit: sha.ok ? sha.out.trim() : '', message: text, remaining },
   };
 }
 
