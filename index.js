@@ -6,9 +6,9 @@
  * uncommitted changes — and switches the main checkout when the user asks for
  * it from the panel or the composer chip.
  *
- * Only the explicit `/switch` route writes: it runs `git switch`, never
- * commits, never touches the index, and refuses to move a dirty worktree
- * unless the request carries `force: true`.
+ * Only explicit actions write: `/action` saves or pushes/pulls, and `/switch`
+ * moves a clean worktree. The plugin never stashes, discards, force-pushes or
+ * commits to `master`.
  * @module dsh-branch-overview
  */
 import { execFile } from 'node:child_process';
@@ -35,6 +35,10 @@ const MAX_BRANCHES_PER_REPO = 300;
 const MAX_UNPUSHED_LOOKUPS = 30;
 const GIT_TIMEOUT_MS = 20000;
 const BODY_LIMIT = 16 * 1024;
+/** Branches the plugin must not commit to or push. */
+const PROTECTED_BRANCH = 'master';
+/** Local-only paths never included in a save. */
+const SAVE_EXCLUDES = ['.dsh-backups', '.tmp', '.cache', '.DS_Store'];
 
 /** Run one git command without a shell; never throws. */
 function git(cwd, args) {
@@ -77,6 +81,60 @@ async function repoRootOf(dir) {
 async function currentBranchOf(dir) {
   const result = await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']);
   return result.ok ? result.out.trim() : '';
+}
+
+/** A merge, rebase, cherry-pick or revert must be finished before saving/switching. */
+async function pendingOperationOf(root) {
+  for (const marker of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD']) {
+    const found = await git(root, ['rev-parse', '-q', '--verify', marker]);
+    if (found.ok) return marker === 'MERGE_HEAD' ? '合并' : marker === 'CHERRY_PICK_HEAD' ? 'cherry-pick' : 'revert';
+  }
+  for (const marker of ['rebase-merge', 'rebase-apply']) {
+    const path = await git(root, ['rev-parse', '--git-path', marker]);
+    if (!path.ok) continue;
+    const markerPath = path.out.trim();
+    const resolved = isAbsolute(markerPath) ? markerPath : join(root, markerPath);
+    try {
+      await stat(resolved);
+      return 'rebase';
+    } catch {
+      // Marker absent: no rebase in progress.
+    }
+  }
+  return '';
+}
+
+/** Local-only paths that are never part of save or a dirty-switch check. */
+function isExcludedPath(file) {
+  const path = String(file ?? '').replace(/\\/g, '/');
+  if (path === '.DS_Store' || path.endsWith('/.DS_Store')) return true;
+  return SAVE_EXCLUDES.some((entry) => path === entry || path.startsWith(`${entry}/`));
+}
+
+/** Parse `git status --porcelain=v1 -z` into path records. */
+async function statusEntriesOf(root) {
+  const result = await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+  if (!result.ok) return { ok: false, error: firstLine(result.err) };
+  const records = result.out.split('\0');
+  const entries = [];
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record === '') continue;
+    const code = record.slice(0, 2);
+    const path = record.slice(3);
+    let oldPath = '';
+    if (code[0] === 'R' || code[0] === 'C') {
+      oldPath = records[index + 1] ?? '';
+      index += 1;
+    }
+    entries.push({ code, path, oldPath });
+  }
+  return { ok: true, entries };
+}
+
+/** Changes that are not local-only backups/temp files. */
+function meaningfulChanges(entries) {
+  return entries.filter((entry) => !isExcludedPath(entry.path) && !isExcludedPath(entry.oldPath));
 }
 
 /**
@@ -159,7 +217,7 @@ function parseWorktrees(text) {
  * @param section - workspace title the repository was found under.
  */
 async function readRepo(root, section) {
-  const [head, status, refs, worktreeList, remoteRefs, stash] = await Promise.all([
+  const [head, status, refs, worktreeList, remoteRefs] = await Promise.all([
     git(root, ['rev-parse', '--abbrev-ref', 'HEAD']),
     git(root, ['status', '--porcelain']),
     git(root, [
@@ -170,7 +228,6 @@ async function readRepo(root, section) {
     ]),
     git(root, ['worktree', 'list', '--porcelain']),
     git(root, ['for-each-ref', '--format=x', 'refs/remotes']),
-    git(root, ['stash', 'list']),
   ]);
   if (!refs.ok) {
     return { root, name: basename(root), section, ok: false, error: refs.err.split('\n')[0] ?? 'git failed' };
@@ -237,7 +294,6 @@ async function readRepo(root, section) {
       files: dirtyFiles.slice(0, 20),
     },
     worktrees,
-    stashCount: stash.ok ? stash.out.split('\n').filter((line) => line !== '').length : 0,
     remoteBranchCount: remotes.length,
     branches,
   };
@@ -290,6 +346,9 @@ function firstLine(text) {
  * refuses when the local branch has diverged or sits in another worktree.
  */
 async function pullRemoteBranch(root, branch) {
+  if (branch !== PROTECTED_BRANCH) {
+    return { status: 403, body: { ok: false, code: 'protected', action: 'pull', branch, error: `只支持拉取 ${PROTECTED_BRANCH}` } };
+  }
   const head = await currentBranchOf(root);
   if (head === branch) {
     const pulled = await git(root, ['pull', '--ff-only', 'origin', branch]);
@@ -302,31 +361,54 @@ async function pullRemoteBranch(root, branch) {
   return { status: 200, body: { ok: true, action: 'pull', branch, mode: 'fetch', sha: sha.ok ? sha.out.trim() : '' } };
 }
 
-/** Stash the worktree's uncommitted changes (tracked files) on the current branch. */
-async function stashWorkingChanges(root) {
-  const status = await git(root, ['status', '--porcelain']);
-  const files = status.ok ? status.out.split('\n').filter((line) => line !== '') : [];
-  const tracked = files.filter((line) => line.startsWith('??') === false && line.startsWith('!!') === false);
-  if (tracked.length === 0) {
-    return {
-      status: 409,
-      body: {
-        ok: false,
-        code: 'clean',
-        action: 'stash',
-        error: files.length > 0 ? '只有未跟踪文件，git stash 不会包含它们' : '没有未提交改动',
-      },
-    };
-  }
+/** Save all current-branch changes as one local commit. Never pushes. */
+async function saveWorkingChanges(root, message) {
   const branch = await currentBranchOf(root);
-  const stashed = await git(root, ['stash', 'push', '-m', `dsh-branch-overview ${branch} ${new Date().toISOString()}`]);
-  if (!stashed.ok) return { status: 409, body: { ok: false, code: 'git', action: 'stash', error: firstLine(stashed.err) } };
-  const ref = await git(root, ['rev-parse', '--short', 'stash@{0}']);
-  return { status: 200, body: { ok: true, action: 'stash', branch, files: tracked.length, stash: ref.ok ? ref.out.trim() : 'stash@{0}' } };
+  if (branch === '' || branch === 'HEAD') {
+    return { status: 409, body: { ok: false, code: 'detached', action: 'save', error: '当前是 detached HEAD，不能保存到本地分支' } };
+  }
+  if (branch === PROTECTED_BRANCH) {
+    return { status: 403, body: { ok: false, code: 'protected', action: 'save', branch, error: `${PROTECTED_BRANCH} 只允许拉取，不能保存` } };
+  }
+  const pending = await pendingOperationOf(root);
+  if (pending !== '') {
+    return { status: 409, body: { ok: false, code: 'pending', action: 'save', branch, error: `当前处于${pending}过程中，请先完成后再保存` } };
+  }
+  const status = await statusEntriesOf(root);
+  if (!status.ok) return { status: 409, body: { ok: false, code: 'git', action: 'save', branch, error: status.error } };
+  const changes = meaningfulChanges(status.entries);
+  if (changes.length === 0) {
+    return { status: 409, body: { ok: false, code: 'clean', action: 'save', branch, error: '没有可保存的改动（本地备份/临时文件不参与保存）' } };
+  }
+  const excludes = SAVE_EXCLUDES.flatMap((entry) => [`:(exclude)${entry}`, `:(exclude)${entry}/**`]);
+  const added = await git(root, ['add', '-A', '--', '.', ...excludes, ':(exclude,glob)**/.DS_Store']);
+  if (!added.ok) return { status: 409, body: { ok: false, code: 'git', action: 'save', branch, error: firstLine(added.err) } };
+  const staged = await git(root, ['diff', '--cached', '--name-only', '-z']);
+  const files = staged.ok ? staged.out.split('\0').filter((item) => item !== '') : [];
+  if (files.length === 0) {
+    return { status: 409, body: { ok: false, code: 'clean', action: 'save', branch, error: '排除本地临时文件后没有可保存的改动' } };
+  }
+  const text = typeof message === 'string' && message.trim() !== ''
+    ? message.trim().slice(0, 500)
+    : `保存当前改动 ${new Date().toISOString()}`;
+  const committed = await git(root, ['commit', '-m', text]);
+  if (!committed.ok) {
+    return { status: 409, body: { ok: false, code: 'git', action: 'save', branch, files: files.length, error: firstLine(committed.err) } };
+  }
+  const sha = await git(root, ['rev-parse', '--short', 'HEAD']);
+  const after = await statusEntriesOf(root);
+  const remaining = after.ok ? meaningfulChanges(after.entries).length : -1;
+  return {
+    status: 200,
+    body: { ok: true, action: 'save', branch, files: files.length, commit: sha.ok ? sha.out.trim() : '', remaining },
+  };
 }
 
 /** Push one branch to origin; a branch without upstream gets `-u` on first push. */
 async function pushLocalBranch(root, branch) {
+  if (branch === PROTECTED_BRANCH) {
+    return { status: 403, body: { ok: false, code: 'protected', action: 'push', branch, error: `${PROTECTED_BRANCH} 只允许拉取，不能推送` } };
+  }
   const head = await currentBranchOf(root);
   const isCurrent = head === branch;
   let upstream = '';
@@ -342,31 +424,6 @@ async function pushLocalBranch(root, branch) {
   const pushed = await git(root, args);
   if (!pushed.ok) return { status: 409, body: { ok: false, code: 'git', action: 'push', branch, error: firstLine(pushed.err) } };
   return { status: 200, body: { ok: true, action: 'push', branch, upstream: isCurrent && upstream !== '' ? upstream : `origin/${branch}` } };
-}
-
-/** Discard uncommitted changes to tracked files (staged and unstaged alike). */
-async function discardWorkingChanges(root) {
-  const status = await git(root, ['status', '--porcelain']);
-  const files = status.ok ? status.out.split('\n').filter((line) => line !== '') : [];
-  const tracked = files.filter((line) => line.startsWith('??') === false && line.startsWith('!!') === false);
-  if (tracked.length === 0) {
-    return {
-      status: 409,
-      body: {
-        ok: false,
-        code: 'clean',
-        action: 'discard',
-        error: files.length > 0 ? '只剩未跟踪文件，丢弃不会处理它们' : '没有未提交改动',
-      },
-    };
-  }
-  const restored = await git(root, ['restore', '--source=HEAD', '--staged', '--worktree', '.']);
-  if (!restored.ok) {
-    return { status: 409, body: { ok: false, code: 'git', action: 'discard', error: firstLine(restored.err) } };
-  }
-  const after = await git(root, ['status', '--porcelain']);
-  const remaining = after.ok ? after.out.split('\n').filter((line) => line !== '').length : -1;
-  return { status: 200, body: { ok: true, action: 'discard', files: tracked.length, remaining } };
 }
 
 /** Read and JSON-parse one bounded request body. */
@@ -409,6 +466,20 @@ export function apply(ctx, config = {}) {
   let cacheKey = '';
   let cache = null;
   let cacheAt = 0;
+  const repoLocks = new Set();
+
+  /** Serialize writes for one repository so two windows cannot race. */
+  async function withRepoLock(root, run) {
+    if (repoLocks.has(root)) {
+      return { status: 409, body: { ok: false, code: 'busy', error: '该仓库正在处理另一个操作，请稍后再试' } };
+    }
+    repoLocks.add(root);
+    try {
+      return await run();
+    } finally {
+      repoLocks.delete(root);
+    }
+  }
 
   /** Build (or reuse) the overview payload for all workspaces, or for one path. */
   async function buildOverview(force, onlyPath) {
@@ -454,10 +525,10 @@ export function apply(ctx, config = {}) {
   }
 
   /**
-   * Switch one worktree to `branch`, creating a local tracking branch for a
-   * remote-only ref. A dirty worktree needs `force: true`.
+   * Switch one worktree to a clean branch. If the name is a remote-tracking
+   * branch, create its local counterpart only when no exact local branch exists.
    */
-  async function switchBranch(repoPath, branch, force, stashFirst) {
+  async function switchBranch(repoPath, branch) {
     const root = await repoRootOf(repoPath);
     if (root === '') {
       return { status: 400, body: { ok: false, code: 'not-a-repo', error: `不是 git 仓库目录：${repoPath}` } };
@@ -466,64 +537,60 @@ export function apply(ctx, config = {}) {
     if (current === branch) {
       return { status: 200, body: { ok: true, switched: false, branch: current, root } };
     }
-    const status = await git(root, ['status', '--porcelain']);
-    const dirtyFiles = status.ok ? status.out.split('\n').filter((line) => line !== '') : [];
-    const dirtyTracked = dirtyFiles.filter((line) => line.startsWith('??') === false && line.startsWith('!!') === false);
-    const dirtyUntracked = dirtyFiles.filter((line) => line.startsWith('??'));
-    let stashed = '';
-    let stashError = '';
-    if (dirtyTracked.length > 0) {
-      if (stashFirst === true) {
-        // Saving first keeps the switch deterministic: the worktree is clean
-        // before git touches it, so a conflicting change can no longer make
-        // `git switch` refuse halfway.
-        const saved = await git(root, ['stash', 'push', '-m', `dsh-branch-overview before switch to ${branch} ${new Date().toISOString()}`]);
-        if (saved.ok) {
-          const ref = await git(root, ['rev-parse', '--short', 'stash@{0}']);
-          stashed = ref.ok ? ref.out.trim() : 'stash@{0}';
-        } else {
-          stashError = firstLine(saved.err);
-        }
-      }
-      if (stashError !== '' && force !== true) {
-        return { status: 409, body: { ok: false, code: 'git', root, currentBranch: current, error: `暂存失败：${stashError}` } };
-      }
-      if (stashed === '' && stashError === '' && force !== true) {
-        return {
-          status: 409,
-          body: {
-            ok: false,
-            code: 'dirty',
-            root,
-            currentBranch: current,
-            dirty: { count: dirtyFiles.length, files: dirtyFiles.slice(0, 20) },
-            error: `工作区有 ${dirtyTracked.length} 个已跟踪文件改动${dirtyUntracked.length > 0 ? `（另有 ${dirtyUntracked.length} 个未跟踪文件）` : ''}，切换会把它带到新分支`,
-          },
-        };
-      }
+    const pending = await pendingOperationOf(root);
+    if (pending !== '') {
+      return { status: 409, body: { ok: false, code: 'pending', root, currentBranch: current, error: `当前处于${pending}过程中，请先完成后再切换` } };
     }
+    const status = await statusEntriesOf(root);
+    if (!status.ok) {
+      return { status: 409, body: { ok: false, code: 'git', root, currentBranch: current, error: status.error } };
+    }
+    const dirty = meaningfulChanges(status.entries);
+    if (dirty.length > 0 && current !== PROTECTED_BRANCH) {
+      return {
+        status: 409,
+        body: {
+          ok: false,
+          code: 'dirty',
+          root,
+          currentBranch: current,
+          dirty: { count: dirty.length, files: dirty.slice(0, 20).map((entry) => entry.path) },
+          error: `工作区还有 ${dirty.length} 个未保存改动，请先保存到本地分支再切换`,
+        },
+      };
+    }
+    // master cannot be saved or pushed. If it is dirty, let the user move those
+    // changes to a work branch instead of trapping them on master.
+    const carried = current === PROTECTED_BRANCH ? dirty.length : 0;
     let target = branch;
-    const remote = /^([^/]+)\/(.+)$/.exec(branch);
-    if (remote !== null) {
-      const local = remote[2];
-      const exists = await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${local}`]);
-      target = exists.ok ? local : branch;
-      if (!exists.ok) {
-        const created = await git(root, ['switch', '--create', local, branch]);
-        if (!created.ok) {
-          return { status: 409, body: { ok: false, code: 'git', root, error: created.err.split('\n')[0] ?? 'git switch failed', ...(stashed === '' ? {} : { stashed }) } };
-        }
-        const nowCreated = await currentBranchOf(root);
-        return { status: 200, body: { ok: true, switched: true, branch: nowCreated, previous: current, root, created: local, ...(stashed === '' ? {} : { stashed }) } };
+    let created = false;
+    const exactLocal = await git(root, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+    if (!exactLocal.ok) {
+      const remote = await git(root, ['show-ref', '--verify', '--quiet', `refs/remotes/${branch}`]);
+      if (!remote.ok) {
+        return { status: 404, body: { ok: false, code: 'not-found', root, currentBranch: current, error: `找不到分支：${branch}` } };
       }
+      const slash = branch.indexOf('/');
+      if (slash < 0 || slash === branch.length - 1) {
+        return { status: 409, body: { ok: false, code: 'invalid', root, currentBranch: current, error: `无法解析远端分支：${branch}` } };
+      }
+      target = branch.slice(slash + 1);
+      const localTarget = await git(root, ['show-ref', '--verify', '--quiet', `refs/heads/${target}`]);
+      created = !localTarget.ok;
     }
-    const switched = await git(root, ['switch', target]);
+    const args = created
+      ? ['switch', '--create', target, '--track', branch]
+      : ['switch', target];
+    const switched = await git(root, args);
     if (!switched.ok) {
-      return { status: 409, body: { ok: false, code: 'git', root, currentBranch: current, error: switched.err.split('\n').slice(-3).join(' ').trim(), ...(stashed === '' ? {} : { stashed }) } };
+      return { status: 409, body: { ok: false, code: 'git', root, currentBranch: current, error: switched.err.split('\n').slice(-3).join(' ').trim() } };
     }
     const now = await currentBranchOf(root);
     cache = null;
-    return { status: 200, body: { ok: true, switched: true, branch: now, previous: current, root, ...(stashed === '' ? {} : { stashed }) } };
+    return {
+      status: 200,
+      body: { ok: true, switched: true, branch: now, previous: current, root, ...(created ? { created: target } : {}), ...(carried > 0 ? { carried } : {}) },
+    };
   }
 
   ctx.inject(['webServer'], (webCtx) => {
@@ -580,7 +647,12 @@ export function apply(ctx, config = {}) {
           return;
         }
         try {
-          const outcome = await switchBranch(repoPath, branch, body.force === true, body.stash === true);
+          const root = await repoRootOf(repoPath);
+          if (root === '') {
+            send(res, 400, { ok: false, code: 'not-a-repo', error: `不是 git 仓库目录：${repoPath}` });
+            return;
+          }
+          const outcome = await withRepoLock(root, () => switchBranch(repoPath, branch));
           send(res, outcome.status, outcome.body);
         } catch (error) {
           send(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -609,16 +681,24 @@ export function apply(ctx, config = {}) {
           send(res, 400, { ok: false, code: 'invalid', error: '"repoPath" 必须是绝对路径' });
           return;
         }
-        if (action !== 'pull' && action !== 'stash' && action !== 'push' && action !== 'discard') {
-          send(res, 400, { ok: false, code: 'invalid', error: '"action" 必须是 pull / stash / push / discard' });
+        if (action !== 'pull' && action !== 'push' && action !== 'save') {
+          send(res, 400, { ok: false, code: 'invalid', error: '"action" 必须是 pull / push / save' });
           return;
         }
         if ((action === 'pull' || action === 'push') && !BRANCH_NAME.test(branch)) {
           send(res, 400, { ok: false, code: 'invalid', error: '"branch" 不是合法的分支名' });
           return;
         }
-        if (action === 'discard' && (body === null || typeof body !== 'object' || body.confirm !== true)) {
-          send(res, 409, { ok: false, code: 'confirm-required', action: 'discard', error: '丢弃改动需要显式确认（confirm: true）' });
+        if (action === 'pull' && branch !== PROTECTED_BRANCH) {
+          send(res, 403, { ok: false, code: 'protected', action, error: `只支持拉取 ${PROTECTED_BRANCH}` });
+          return;
+        }
+        if (action === 'push' && branch === PROTECTED_BRANCH) {
+          send(res, 403, { ok: false, code: 'protected', action, error: `${PROTECTED_BRANCH} 只允许拉取，不能推送` });
+          return;
+        }
+        if ((action === 'save' || action === 'push') && (body === null || typeof body !== 'object' || body.confirm !== true)) {
+          send(res, 409, { ok: false, code: 'confirm-required', action, error: `${action === 'save' ? '保存' : '推送'}需要显式确认（confirm: true）` });
           return;
         }
         try {
@@ -627,13 +707,14 @@ export function apply(ctx, config = {}) {
             send(res, 400, { ok: false, code: 'not-a-repo', error: `不是 git 仓库目录：${repoPath}` });
             return;
           }
-          const outcome = action === 'pull'
-            ? await pullRemoteBranch(root, branch)
-            : action === 'stash'
-              ? await stashWorkingChanges(root)
-              : action === 'discard'
-                ? await discardWorkingChanges(root)
-                : await pushLocalBranch(root, branch);
+          const message = body !== null && typeof body === 'object' && typeof body.message === 'string' ? body.message : '';
+          const outcome = await withRepoLock(root, () => (
+            action === 'pull'
+              ? pullRemoteBranch(root, branch)
+              : action === 'save'
+                ? saveWorkingChanges(root, message)
+                : pushLocalBranch(root, branch)
+          ));
           if (outcome.status === 200) cache = null;
           send(res, outcome.status, outcome.body);
         } catch (error) {

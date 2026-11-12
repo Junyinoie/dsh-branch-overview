@@ -5,7 +5,7 @@
 - 根目录有 `cordis.patch.yml`（市场 collector 的 DSH 插件特征检测通过）
 - 包名 `dsh-branch-overview`（无作用域，可直接发布/引用）
 - `package.json` 的 `dsh.bundle` + `dsh.client` 声明完整
-- 已建本地 git 仓库并打 tag `v0.2.8`
+- 已建本地 git 仓库，当前版本 `0.3.0`（发布时打 tag `v0.3.0`）
 
 ## 1. 建 GitHub 仓库并推送（需要你的 GitHub 账号）
 
@@ -34,13 +34,13 @@ collector 每天 06:00 扫描 `dsh-plugin` 等 topic；仓库不是 fork/archive
 
 - 仓库地址：https://github.com/Junyinoie/dsh-branch-overview
 - 插件类型：cordis 插件
-- 一句话简介：在 DSH 输入框显示当前会话仓库与分支，可切换分支、暂存/丢弃改动、查看未保存/未推送状态。
+- 一句话简介：在 DSH 输入框显示当前会话仓库与分支，可保存到本地分支、推送、切换分支，master 只允许拉取。
 - 安装命令：dsh plugin --profile web add github:Junyinoie/dsh-branch-overview
 - 作者自述：
   dsh-branch-overview 把「分支管理」放进 DSH 工作区：输入框左侧芯片直接显示 仓库 + 当前分支，
-  点开即可按目录筛选分支、一键切换；当前分支的未保存改动可暂存或丢弃（二次确认），
-  有本地提交未推送时显示 未推送 N，并可一键拉取/推送。弹窗里的 ? 图标给出每种状态的说明与危险操作提醒。
-  全部 git 操作只在你点击时执行，Host 端只读扫描 + 显式确认。
+  点开即可按目录筛选分支、保存到本地分支、推送或切换；master 仅允许快进拉取，不能保存或推送。
+  有本地提交未推送时显示 未推送 N，切换前会要求先保存；弹窗里的 ? 图标给出每种状态的说明。
+  全部 git 操作只在你点击时执行，Host 端只读扫描 + 显式确认，不自动暂存或丢弃改动。
 ```
 
 收录后市场会自动回复 ✅ 并关闭 issue；次日 06:00 数据更新出现在 Web 站与插件市场面板。

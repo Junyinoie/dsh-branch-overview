@@ -244,13 +244,13 @@ window.__ModuleLoader__.load({
 
     /** One row of the in-dialog legend: what a badge means and which action is risky. */
     const LEGEND = [
-      { label: '当前', title: '当前检出分支', desc: '这个分支正被检出，工作区里的改动都属于它。', danger: '切换' },
-      { label: '未保存 N', title: '未提交的已跟踪改动', desc: '有 N 个已跟踪文件改了但还没 commit。', danger: '丢弃（不可恢复）；暂存/切换前会二次确认' },
-      { label: '未跟踪 M', title: '未跟踪的新文件', desc: '有 M 个新文件没被 git 跟踪；暂存和丢弃都不会处理它们。', danger: '无（需手动 git add 或删除）' },
+      { label: '当前', title: '当前检出分支', desc: '这个分支正被检出，工作区里的改动都属于它。', danger: '切换前需要先保存' },
+      { label: '未保存 N', title: '未提交的已跟踪改动', desc: '有 N 个已跟踪文件改了但还没保存到本地分支。', danger: '切换前必须先保存' },
+      { label: '未跟踪 M', title: '未跟踪的新文件', desc: '有 M 个新文件还没被 git 跟踪；保存会一并保存它们。', danger: '无' },
       { label: '未推送 M', title: '本地提交未推送', desc: '本地有 M 个提交还没推到远端。', danger: '推送（会影响远端，点击前二次确认）' },
       { label: '工作树占用', title: '该分支在别的 worktree 里', desc: '同一分支不能同时在两处检出，所以这里不能切换。', danger: '无（请到对应工作树里操作）' },
       { label: '已同步', title: '与上游一致', desc: '本地分支和它跟踪的远端分支指向同一个提交。', danger: '无' },
-      { label: '领先 / 落后 / 分叉', title: '与上游的差异', desc: '领先=本地有未推送提交；落后=远端有未拉取提交；分叉=两边都有。', danger: '落后/分叉时推送会被 git 拒绝，需先拉取或合并' },
+      { label: '领先 / 落后 / 分叉', title: '与上游的差异', desc: '领先=本地有未推送提交；落后=远端有未拉取提交；分叉=两边都有。', danger: '落后/分叉时推送会被 git 拒绝，需先处理' },
       { label: '无上游', title: '没设置 tracking', desc: '这个本地分支还没关联远端分支。', danger: '推送会自动执行 git push -u origin <分支>' },
       { label: '上游已删除', title: '远端分支已不存在', desc: '它跟踪的远端分支已被删除。', danger: '推送可能重新创建该远端分支' },
     ];
@@ -279,13 +279,13 @@ window.__ModuleLoader__.load({
       const [busyAction, setBusyAction] = useState('');
       const [actionNote, setActionNote] = useState('');
       const [actionError, setActionError] = useState('');
-      const [confirmDiscard, setConfirmDiscard] = useState(false);
       const [helpOpen, setHelpOpen] = useState(false);
       const branches = active !== null && active !== undefined && Array.isArray(active.branches) ? active.branches : [];
       const needle = filter.trim().toLowerCase();
       const visible = branches.filter((branch) => needle === '' || `${branch.name} ${branch.subject} ${branch.upstream}`.toLowerCase().includes(needle));
       const counts = dirtyParts(active);
       const dirtyCount = counts.tracked;
+      const changeCount = counts.count;
       const untrackedCount = counts.untracked;
       const noRemote = active !== null && active !== undefined && active.noRemote === true;
 
@@ -300,27 +300,36 @@ window.__ModuleLoader__.load({
 
       /**
        * Run one quick action against the active repository: `pull` (master
-       * only), `stash` (current branch only) or `push` (any branch). Pushing
-       * asks first because it is visible to everyone else.
+       * only), `save` (current branch only) or `push` (any non-master branch).
        */
-      async function runAction(branch, action, options) {
+      async function runAction(branch, action) {
         if (active === null || active === undefined) return;
-        const opts = options !== null && typeof options === 'object' ? options : {};
+        if (action === 'save') {
+          if (changeCount === 0) {
+            setActionError('没有可保存的改动');
+            return;
+          }
+          if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+            if (!window.confirm(`将保存当前分支的 ${changeCount} 个改动到本地分支 ${branch.name}，不会推送。继续？`)) return;
+          }
+        }
         if (action === 'push' && typeof window !== 'undefined' && typeof window.confirm === 'function') {
-          if (!window.confirm(`把分支 ${branch.name} 推送到 origin 吗？`)) return;
+          const unsaved = changeCount > 0 ? `当前还有 ${changeCount} 个未保存改动，不会推送。\n` : '';
+          if (!window.confirm(`${unsaved}把分支 ${branch.name} 推送到 origin 吗？`)) return;
         }
         setBusyAction(`${action}:${branch.name}`);
         setActionError('');
         setActionNote('');
         try {
-          const result = await postJson(ROUTE_ACTION, { repoPath: active.root, action, branch: branch.name, confirm: opts.confirm === true });
+          const payload = { repoPath: active.root, action, branch: branch.name };
+          if (action === 'save' || action === 'push') payload.confirm = true;
+          const result = await postJson(ROUTE_ACTION, payload);
           if (result.json.ok === true) {
             if (action === 'pull') setActionNote(`已更新 ${branch.name}（${result.json.mode === 'fetch' ? 'fetch 快进本地分支' : 'pull --ff-only'}）`);
-            else if (action === 'stash') setActionNote(`已暂存 ${result.json.files} 个改动 → ${result.json.stash}`);
-            else if (action === 'discard') {
-              setConfirmDiscard(false);
-              const leftover = typeof result.json.remaining === 'number' && result.json.remaining > 0 ? `；仍有 ${result.json.remaining} 个未跟踪文件未处理` : '';
-              setActionNote(`已丢弃 ${result.json.files} 个文件的改动${leftover}`);
+            else if (action === 'save') {
+              const commit = typeof result.json.commit === 'string' && result.json.commit !== '' ? `（${result.json.commit}）` : '';
+              const remaining = typeof result.json.remaining === 'number' && result.json.remaining > 0 ? `；仍有 ${result.json.remaining} 个本地临时改动未保存` : '';
+              setActionNote(`已保存 ${result.json.files} 个文件到本地分支 ${branch.name}${commit}，尚未推送${remaining}`);
             } else setActionNote(`已推送 ${branch.name} → ${result.json.upstream}`);
             if (typeof props.onAction === 'function') props.onAction();
             return;
@@ -333,17 +342,18 @@ window.__ModuleLoader__.load({
         }
       }
 
-      async function submit(branch, options) {
+      async function submit(branch) {
         if (active === null || active === undefined) return;
-        const opts = options !== null && typeof options === 'object' ? options : {};
+        if (active.currentBranch === 'master' && changeCount > 0
+          && typeof window !== 'undefined' && typeof window.confirm === 'function') {
+          if (!window.confirm(`master 不允许保存。切换到 ${branch.name} 会把当前 ${changeCount} 个改动带过去，是否继续？`)) return;
+        }
         setBusy(branch.name);
         setError('');
         try {
           const result = await postJson(ROUTE_SWITCH, {
             repoPath: active.root,
             branch: branch.name,
-            force: opts.force === true,
-            stash: opts.stash === true,
           });
           if (result.json.ok === true) {
             setPending(null);
@@ -355,11 +365,40 @@ window.__ModuleLoader__.load({
             setPending({ branch });
             return;
           }
-          const reason = typeof result.json.error === 'string' ? result.json.error : `切换失败（HTTP ${result.status}）`;
-          const saved = typeof result.json.stashed === 'string' && result.json.stashed !== ''
-            ? `（改动已暂存为 ${result.json.stashed}，可用 git stash pop 恢复）`
-            : '';
-          setError(`${reason}${saved}`);
+          setError(typeof result.json.error === 'string' ? result.json.error : `切换失败（HTTP ${result.status}）`);
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : String(cause));
+        } finally {
+          setBusy('');
+        }
+      }
+
+      async function saveAndSwitch(branch) {
+        if (active === null || active === undefined) return;
+        setBusy(branch.name);
+        setError('');
+        setActionError('');
+        try {
+          const saved = await postJson(ROUTE_ACTION, {
+            repoPath: active.root,
+            action: 'save',
+            confirm: true,
+          });
+          if (saved.json.ok !== true) {
+            setActionError(typeof saved.json.error === 'string' ? saved.json.error : `保存失败（HTTP ${saved.status}）`);
+            return;
+          }
+          const switched = await postJson(ROUTE_SWITCH, {
+            repoPath: active.root,
+            branch: branch.name,
+          });
+          if (switched.json.ok === true) {
+            setPending(null);
+            if (typeof props.onSwitched === 'function') props.onSwitched(active.root, branch.name);
+            if (typeof props.onClose === 'function') props.onClose();
+            return;
+          }
+          setError(typeof switched.json.error === 'string' ? switched.json.error : `切换失败（HTTP ${switched.status}）`);
         } catch (cause) {
           setError(cause instanceof Error ? cause.message : String(cause));
         } finally {
@@ -375,7 +414,7 @@ window.__ModuleLoader__.load({
               active !== null && active !== undefined ? active.root : ''),
             h('button', {
               type: 'button',
-              onClick: () => { setHelpOpen((open) => open === false); setPending(null); setConfirmDiscard(false); },
+              onClick: () => { setHelpOpen((open) => open === false); setPending(null); },
               title: helpOpen ? '返回分支列表' : '状态说明与危险操作',
               'aria-label': helpOpen ? '返回分支列表' : '状态说明与危险操作',
               'aria-pressed': helpOpen,
@@ -399,7 +438,6 @@ window.__ModuleLoader__.load({
                 onClick: () => {
                   setActiveRoot(repo.root);
                   setPending(null);
-                  setConfirmDiscard(false);
                   setError('');
                   if (typeof props.onSelectRepo === 'function') props.onSelectRepo(repo.root);
                 },
@@ -412,7 +450,7 @@ window.__ModuleLoader__.load({
               }, repo.name)))
             : null,
           noRemote
-            ? h('div', { style: { padding: '8px 14px 0', fontSize: 11.5, color: T.warn } }, '该仓库未配置远端：拉取与推送不可用，只能切换分支或暂存。')
+            ? h('div', { style: { padding: '8px 14px 0', fontSize: 11.5, color: T.warn } }, '该仓库未配置远端：拉取与推送不可用，仍可保存和切换分支。')
             : null,
           helpOpen ? h(Legend) : null,
           helpOpen ? null : h('div', { style: { padding: '10px 14px 6px' } },
@@ -447,21 +485,13 @@ window.__ModuleLoader__.load({
               if (!isMaster) {
                 if (branch.current === true) {
                   rowActions.push(h('button', {
-                    key: 'stash',
+                    key: 'save',
                     type: 'button',
-                    disabled: actionBusy || dirtyCount === 0,
-                    title: dirtyCount > 0 ? `暂存当前 ${dirtyCount} 个未提交改动` : '没有未提交改动',
-                    onClick: () => { void runAction(branch, 'stash'); },
-                    style: actionStyle(actionBusy || dirtyCount === 0),
-                  }, busyAction === `stash:${branch.name}` ? '暂存中…' : '暂存'));
-                  rowActions.push(h('button', {
-                    key: 'discard',
-                    type: 'button',
-                    disabled: actionBusy || dirtyCount === 0,
-                    title: dirtyCount > 0 ? `丢弃当前 ${dirtyCount} 个未提交改动（不可恢复）` : '没有未提交改动',
-                    onClick: () => { setConfirmDiscard(true); setActionError(''); setActionNote(''); },
-                    style: { ...actionStyle(actionBusy || dirtyCount === 0), color: actionBusy || dirtyCount === 0 ? T.faint : T.danger },
-                  }, '丢弃'));
+                    disabled: actionBusy || changeCount === 0,
+                    title: changeCount > 0 ? `保存当前 ${changeCount} 个改动到本地分支 ${branch.name}` : '没有可保存的改动',
+                    onClick: () => { void runAction(branch, 'save'); },
+                    style: actionStyle(actionBusy || changeCount === 0),
+                  }, busyAction === `save:${branch.name}` ? '保存中…' : '保存'));
                 }
                 rowActions.push(h('button', {
                   key: 'push',
@@ -492,7 +522,7 @@ window.__ModuleLoader__.load({
                   type: 'button',
                   disabled,
                   title: occupied ? '该分支已被另一个工作树占用' : branch.current === true ? '已是当前分支' : `git switch ${branch.name}`,
-                  onClick: () => { void submit(branch, { force: false }); },
+                  onClick: () => { void submit(branch); },
                   style: {
                     padding: '3px 10px', borderRadius: 6, fontSize: 11.5, whiteSpace: 'nowrap',
                     border: `1px solid ${T.border}`, background: T.surface,
@@ -506,31 +536,16 @@ window.__ModuleLoader__.load({
           actionError !== ''
             ? h('div', { style: { padding: '8px 14px', borderTop: `1px solid ${T.border}`, fontSize: 12, color: T.danger } }, `操作失败：${actionError}`)
             : null,
-          confirmDiscard
-            ? h('div', { style: { padding: '10px 14px', borderTop: `1px solid ${T.border}`, background: T.surface, fontSize: 12, color: T.danger } },
-              h('div', { style: { marginBottom: 8 } },
-                `将丢弃当前工作区 ${dirtyCount} 个已跟踪文件的改动（含已暂存），此操作无法撤销${untrackedCount > 0 ? `；${untrackedCount} 个未跟踪文件会保留` : ''}。`),
-              h('div', { style: { display: 'flex', gap: 8 } },
-                h('button', {
-                  type: 'button', disabled: busy !== '',
-                  onClick: () => { const cur = branches.find((item) => item.current === true); if (cur !== undefined) void runAction(cur, 'discard', { confirm: true }); },
-                  style: { padding: '4px 12px', borderRadius: 6, border: `1px solid ${T.border}`, background: T.surfaceAlt, color: T.danger, fontSize: 12, cursor: busy !== '' ? 'default' : 'pointer' },
-                }, '确认丢弃'),
-                h('button', {
-                  type: 'button', onClick: () => setConfirmDiscard(false),
-                  style: { padding: '4px 12px', borderRadius: 6, border: `1px solid ${T.border}`, background: 'transparent', color: T.text, fontSize: 12, cursor: 'pointer' },
-                }, '取消')))
-            : null,
           pending !== null
             ? h('div', { style: { padding: '10px 14px', borderTop: `1px solid ${T.border}`, background: T.surface, fontSize: 12, color: T.warn } },
               h('div', { style: { marginBottom: 8 } },
-                `当前工作区有 ${dirtyCount} 个未提交改动。暂存后再切换到 ${pending.branch.name}？（之后可用 git stash pop 恢复）`),
+                `当前分支内容未保存。请先保存到本地分支，再切换到 ${pending.branch.name}。`),
               h('div', { style: { display: 'flex', gap: 8 } },
                 h('button', {
                   type: 'button', disabled: busy !== '',
-                  onClick: () => { void submit(pending.branch, { stash: true }); },
+                  onClick: () => { void saveAndSwitch(pending.branch); },
                   style: { padding: '4px 12px', borderRadius: 6, border: `1px solid ${T.border}`, background: T.surfaceAlt, color: T.text, fontSize: 12, cursor: busy !== '' ? 'default' : 'pointer' },
-                }, busy !== '' ? '处理中…' : '暂存并切换'),
+                }, busy !== '' ? '处理中…' : '保存并切换'),
                 h('button', {
                   type: 'button', onClick: () => setPending(null),
                   style: { padding: '4px 12px', borderRadius: 6, border: `1px solid ${T.border}`, background: 'transparent', color: T.text, fontSize: 12, cursor: 'pointer' },
@@ -608,7 +623,6 @@ window.__ModuleLoader__.load({
       if (repo.noRemote === true) bits.push(h(Badge, { key: 'noremote', text: '未配置远端' }));
       const worktrees = Array.isArray(repo.worktrees) ? repo.worktrees : [];
       if (worktrees.length > 1) bits.push(h(Badge, { key: 'wt', text: `工作树 ${worktrees.length}` }));
-      if (typeof repo.stashCount === 'number' && repo.stashCount > 0) bits.push(h(Badge, { key: 'stash', text: `stash ${repo.stashCount}` }));
       if (typeof repo.remoteBranchCount === 'number' && repo.remoteBranchCount > 0) bits.push(h(Badge, { key: 'remote', text: `远端 ${repo.remoteBranchCount}` }));
       return h('section', {
         style: { border: `1px solid ${T.border}`, borderRadius: 10, background: T.surface, padding: '10px 12px 12px', marginBottom: 12 },
@@ -673,15 +687,21 @@ window.__ModuleLoader__.load({
 
       async function switchFromPanel(repo, branch) {
         const counts = dirtyParts(repo);
-        const dirtyCount = counts.tracked;
-        if (dirtyCount > 0 && typeof window !== 'undefined' && typeof window.confirm === 'function') {
-          const proceed = window.confirm(`工作区 ${repo.name} 有 ${dirtyCount} 个未提交改动，切换到 ${branch.name} 会把这些改动带过去。继续？`);
-          if (!proceed) return;
+        if (counts.count > 0) {
+          if (repo.currentBranch !== 'master') {
+            if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+              window.alert(`工作区 ${repo.name} 还有 ${counts.count} 个未保存改动，请先保存到本地分支再切换。`);
+            }
+            return;
+          }
+          if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+            if (!window.confirm(`master 不允许保存。切换到 ${branch.name} 会把当前 ${counts.count} 个改动带过去，是否继续？`)) return;
+          }
         }
         setSwitchingRoot(repo.root);
         setActionError('');
         try {
-          const result = await postJson(ROUTE_SWITCH, { repoPath: repo.root, branch: branch.name, force: true });
+          const result = await postJson(ROUTE_SWITCH, { repoPath: repo.root, branch: branch.name });
           if (result.json.ok !== true) {
             setActionError(typeof result.json.error === 'string' ? result.json.error : `切换失败（HTTP ${result.status}）`);
           } else {
