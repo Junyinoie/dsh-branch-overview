@@ -72,9 +72,12 @@
 ## 安装
 
 ```bash
-# 从 GitHub 安装
-dsh plugin --profile web add github:Junyinoie/dsh-branch-overview
+# npm（推荐，市场更新也走这个源）
+dsh plugin --profile web add dsh-branch-overview
 # 桌面版把 web 换成 desktop
+
+# GitHub（备选）
+dsh plugin --profile web add github:Junyinoie/dsh-branch-overview
 
 # 本地目录（开发）
 dsh plugin --profile desktop add link:/绝对路径/dsh-branch-overview
@@ -88,14 +91,29 @@ npm test
 
 测试覆盖：保存包含新文件、排除本地备份、`master` 保存/推送保护、脏工作区切换、保存后切换、脏 `master` 迁移、带 `/` 分支切换、rebase 中禁止保存。
 
-## 已上架后的更新流程
+## 发布与更新流程
 
-插件通过 GitHub 源安装，市场按仓库元数据每日刷新，不需要重新提交收录：
+插件同时发布在 npm 和 GitHub。DSH 市场对已安装插件的更新执行 `dsh plugin add dsh-branch-overview@latest`，所以每次发版必须同步发布 npm；只推 GitHub 标签时，市场更新会失败。
 
-1. 修改代码并更新 `package.json` 版本（本次为 `0.3.0`）。
+1. 修改代码并更新 `package.json` 版本（当前为 `0.3.0`）。
 2. `npm test` 通过。
-3. 提交并推送 `main`，打标签 `v0.3.0` 并推送标签。
-4. 市场下一次刷新会读取新版本；已安装用户重新安装/更新即可获得新行为。
+3. 提交并推送 `main`，打标签 `vX.Y.Z` 并推送标签。
+4. 在插件目录发布 npm：
+
+```bash
+npm login --auth-type=web   # 首次登录
+npm publish --access public
+```
+
+`npm publish` 会要求 npm 账号的 2FA 验证码；按提示输入即可。
+
+5. 验证：
+
+```bash
+npm view dsh-branch-overview version
+```
+
+6. 已安装用户在 DSH 市场的「已安装」里点检查更新/更新，完成后重启 DSH。
 
 ```bash
 git add -A

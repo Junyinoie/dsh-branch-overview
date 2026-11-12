@@ -35,7 +35,7 @@ collector 每天 06:00 扫描 `dsh-plugin` 等 topic；仓库不是 fork/archive
 - 仓库地址：https://github.com/Junyinoie/dsh-branch-overview
 - 插件类型：cordis 插件
 - 一句话简介：在 DSH 输入框显示当前会话仓库与分支，可保存到本地分支、推送、切换分支，master 只允许拉取。
-- 安装命令：dsh plugin --profile web add github:Junyinoie/dsh-branch-overview
+- 安装命令：dsh plugin --profile web add dsh-branch-overview
 - 作者自述：
   dsh-branch-overview 把「分支管理」放进 DSH 工作区：输入框左侧芯片直接显示 仓库 + 当前分支，
   点开即可按目录筛选分支、保存到本地分支、推送或切换；master 仅允许快进拉取，不能保存或推送。
@@ -45,17 +45,44 @@ collector 每天 06:00 扫描 `dsh-plugin` 等 topic；仓库不是 fork/archive
 
 收录后市场会自动回复 ✅ 并关闭 issue；次日 06:00 数据更新出现在 Web 站与插件市场面板。
 
-## 4. 收录后可选
+## 4. 后续发版（必须同步 npm）
 
-- README 顶部挂收录徽章（见 dsh-market 的 `PLUGIN-BADGE.md`，高分精选需评分 ≥ 80）
-- 后续发版：改 `package.json` 版本 → `git commit` + `git tag vX.Y.Z` + push；市场每日刷新元数据
+插件已发布到 npm。DSH 市场对已安装插件的更新执行 `dsh plugin add dsh-branch-overview@latest`，只推 GitHub 标签不会让市场更新成功。
+
+1. 修改代码，更新 `package.json` 版本，运行 `npm test`。
+2. 提交并推送 `main`，打标签 `vX.Y.Z` 并推送。
+3. 发布 npm：
+
+```bash
+npm login --auth-type=web   # 首次登录
+npm publish --access public
+```
+
+`npm publish` 会要求 npm 账号的 2FA 验证码；按提示输入即可。
+
+4. 验证版本：
+
+```bash
+npm view dsh-branch-overview version
+```
+
+5. 已安装用户在市场「已安装」里检查更新，完成后重启 DSH。
+
+- README 顶部可挂收录徽章（见 dsh-market 的 `PLUGIN-BADGE.md`，高分精选需评分 ≥ 80）
 
 ## 备注：包名与安装命令
 
-- 未发布到 npm，所以安装命令统一用 git 源：`dsh plugin --profile web add github:Junyinoie/dsh-branch-overview`
-- 如果以后要发 npm（`dsh-branch-overview` 这个名字目前未被占用），执行：
-  ```bash
-  npm login
-  npm publish    # 在 dsh-branch-overview 目录
-  ```
-  然后安装命令可简化为 `dsh plugin --profile web add dsh-branch-overview`
+- 包名 `dsh-branch-overview`，已发布 npm，当前 latest 为 `0.3.0`。
+- 安装命令：
+
+```bash
+dsh plugin --profile web add dsh-branch-overview
+```
+
+- GitHub 源仍可用作备选：
+
+```bash
+dsh plugin --profile web add github:Junyinoie/dsh-branch-overview
+```
+
+- 发版必须在插件目录执行 `npm publish --access public`；仅打 GitHub 标签时，市场已安装用户无法通过市场更新。
